@@ -1,81 +1,71 @@
-function [tau] = NewtonEuler(Robot, pars, dq, ddq, w0, dw0, ddp0)
+function [torque] = NewtonEuler(DH_table, params, q_vel, q_acc, omega0, alpha0, base_lin_acc)
 
-    rsize = size(Robot);
-    linkno = rsize(1);
-    z0 = [0; 0; 1];
+    robot_size = size(DH_table);
+    num_links  = robot_size(1);
 
-    tau = sym(zeros(linkno, 1));
+    joint_axis = [0; 0; 1];
+  
+    torque = sym(zeros(num_links,1));
 
-    w = sym(zeros(3, linkno+1));
-    w(:, 1) = w0;
+    omega    = sym(zeros(3, num_links+1));  omega(:,1)    = omega0;
+    alpha    = sym(zeros(3, num_links+1));  alpha(:,1)    = alpha0;
+    lin_acc  = sym(zeros(3, num_links+1));  lin_acc(:,1)  = base_lin_acc;
 
-    dw = sym(zeros(3, linkno+1));
-    dw(:, 1) = dw0;
+    for i = 1:num_links
+        transforms{i} = DHTransf(DH_table(i,:));
+    end
+   
+    for i = 1:num_links
+        R   = transforms{i}(1:3,1:3)';
+        r_i = transforms{i}(1:3,4);
 
-    ddp = sym(zeros(3, linkno+1));
-    ddp(:, 1) = ddp0;
 
-    for i = 1:linkno
-        A{i} = DHTransf(Robot(i, :));
+        omega(:,i+1)   = R*(omega(:,i)   + q_vel(i)*joint_axis);
+
+        alpha(:,i+1)   = R*(alpha(:,i)   + q_acc(i)*joint_axis ...
+                                 + q_vel(i)*cross(omega(:,i), joint_axis));
+
+        lin_acc(:,i+1) = R*lin_acc(:,i) ...
+                       + cross(alpha(:,i+1), R*r_i) ...
+                       + cross(omega(:,i+1), cross(omega(:,i+1), R*r_i));
+    end
+   
+    com_lin_acc = sym(zeros(3, num_links));
+    for i = 1:num_links
+        com_lin_acc(:,i) = lin_acc(:,i+1) ...
+                         + cross(alpha(:,i+1), params.cm{i}) ...
+                         + cross(omega(:,i+1), cross(omega(:,i+1), params.cm{i}));
+    end
+    
+    force = sym(zeros(3, num_links));
+    force(:,num_links) = params.m{num_links} * com_lin_acc(:,num_links);
+
+    for i = num_links-1:-1:1
+        force(:,i) = transforms{i+1}(1:3,1:3)*force(:,i+1) ...
+                   + params.m{i} * com_lin_acc(:,i);
+    end
+    
+    moment = sym(zeros(3, num_links));
+
+    R_end = transforms{num_links}(1:3,1:3);
+    r_end = R_end' * transforms{num_links}(1:3,4);
+    moment(:,num_links) = params.I{num_links}*alpha(:,end) ...
+                        + cross(omega(:,end), params.I{num_links}*omega(:,end)) ...
+                        + cross(r_end + params.cm{num_links}, force(:,num_links));
+
+    for i = num_links-1:-1:1
+        R_next = transforms{i+1}(1:3,1:3);
+        r_i     = transforms{i}(1:3,1:3)' * transforms{i}(1:3,4);
+
+        moment(:,i) = params.I{i}*alpha(:,i+1) ...
+                    + cross(omega(:,i+1), params.I{i}*omega(:,i+1)) ...
+                    + R_next*moment(:,i+1) ...
+                    - cross(params.cm{i}, R_next*force(:,i+1)) ...
+                    + cross(r_i + params.cm{i}, force(:,i));
     end
 
-    for i = 1:linkno
-        if Robot(i, 6) == sym(1) % Prismatic
-            w(:, i+1) = A{i}(1:3, 1:3).' * w(:, i);
-        else
-            w(:, i+1) = A{i}(1:3, 1:3).' * (w(:, i) + dq(i)*z0);
-        end
-    end
-
-    for i = 1:linkno
-        if Robot(i, 6) == sym(1)
-            dw(:, i+1) = A{i}(1:3, 1:3).' * dw(:, i);
-        else
-            dw(:, i+1) = A{i}(1:3, 1:3).' * (dw(:, i) + ddq(i)*z0 + dq(i)*cross(w(:, i), z0));
-        end
-    end
-
-    for i = 1:linkno
-        R = A{i}(1:3, 1:3);
-        p = A{i}(1:3, 4);
-        if Robot(i, 6) == sym(1)
-            ddp(:, i+1) = R.' * (ddp(:, i) + ddq(i)*z0) + 2*dq(i)*cross(w(:, i+1), R.'*z0) + ...
-                          cross(dw(:, i+1), R.'*p) + cross(w(:, i+1), cross(w(:, i+1), R.'*p));
-        else
-            ddp(:, i+1) = R.' * ddp(:, i) + cross(dw(:, i+1), R.'*p) + ...
-                          cross(w(:, i+1), cross(w(:, i+1), R.'*p));
-        end
-    end
-
-    ddpc = sym(zeros(3, linkno));
-    for i = 1:linkno
-        ddpc(:, i) = ddp(:, i+1) + cross(dw(:, i+1), pars.cm{i}) + cross(w(:, i+1), cross(w(:, i+1), pars.cm{i}));
-    end
-
-    f = sym(zeros(3, linkno));
-    f(:, linkno) = pars.m{linkno} * ddpc(:, linkno);
-
-    for i = 1:linkno-1
-        f(:, linkno-i) = A{linkno-i+1}(1:3, 1:3) * f(:, linkno-i+1) + pars.m{linkno-i} * ddpc(:, linkno-i);
-    end
-
-    mu = sym(zeros(3, linkno));
-    mu(:, linkno) = pars.I{linkno} * dw(:, linkno+1) + cross(w(:, linkno+1), pars.I{linkno} * w(:, linkno+1)) + ...
-                    cross(A{linkno}(1:3, 1:3).' * A{linkno}(1:3, 4) + pars.cm{linkno}, f(:, linkno));
-
-    for i = 1:linkno-1
-        mu(:, linkno-i) = pars.I{linkno-i} * dw(:, linkno-i+1) + ...
-            cross(w(:, linkno-i+1), pars.I{linkno-i} * w(:, linkno-i+1)) + ...
-            A{linkno+1-i}(1:3, 1:3) * mu(:, linkno+1-i) - ...
-            cross(pars.cm{linkno-i}, A{linkno+1-i}(1:3, 1:3) * f(:, linkno+1-i)) + ...
-            cross(A{linkno-i}(1:3, 1:3).' * A{linkno-i}(1:3, 4) + pars.cm{linkno-i}, f(:, linkno-i));
-    end
-
-    for i = 1:linkno
-        if Robot(i, 6) == sym(1)
-            tau(i) = z0.' * A{i}(1:3, 1:3) * f(:, i);
-        else
-            tau(i) = z0.' * A{i}(1:3, 1:3) * mu(:, i);
-        end
+    for i = 1:num_links
+        R   = transforms{i}(1:3,1:3);
+        torque(i) = joint_axis.' * R * moment(:,i);
     end
 end
