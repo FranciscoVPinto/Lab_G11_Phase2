@@ -1,71 +1,86 @@
-function [torque] = NewtonEuler(DH_table, params, q_vel, q_acc, omega0, alpha0, base_lin_acc)
+function tau = NewtonEuler(Robot, m, CoM, I_CoM, dq, ddq, w0, dw0, ddp0, g0)
 
-    robot_size = size(DH_table);
-    num_links  = robot_size(1);
+n = size(Robot, 1); % Number of joints.
+z0 = [0; 0; 1]; % Unit vector along the z-axis.
 
-    joint_axis = [0; 0; 1];
-  
-    torque = sym(zeros(num_links,1));
+% Pre-allocate symbolic containers.
+[R, p, w, dw, ddp, ddp_C] = deal(cell(n+1, 1));
+[f, mu] = deal(cell(n, 1));
 
-    omega    = sym(zeros(3, num_links+1));  omega(:,1)    = omega0;
-    alpha    = sym(zeros(3, num_links+1));  alpha(:,1)    = alpha0;
-    lin_acc  = sym(zeros(3, num_links+1));  lin_acc(:,1)  = base_lin_acc;
+w_prev = w0(:);  % Base angular velocity as 3x1 column
+   dw_prev = dw0(:);  % Base angular accel as 3x1 column
+   tmp_ddp = ddp0 + g0;             % Sum base accel and gravity
+   ddp_prev = tmp_ddp(:);           % Base linear accel + gravity as 3x1 column
 
-    for i = 1:num_links
-        transforms{i} = DHTransf(DH_table(i,:));
+
+R_prev = eye(3);
+p_prev = sym(zeros(3, 1));
+
+tau = sym(zeros(n, 1));
+f_next = sym(zeros(3, 1));
+mu_next = sym(zeros(3, 1));
+
+for i = 1 : n
+    % Compute the homogeneous D-H transformation matrix of the i-th joint.
+    A{i} = DHTransf(Robot(i, :)); % 4×4 homogeneous D-H transformation matrix for joint i.
+    R_rel{i} = A{i}(1 : 3, 1 : 3); % Rotation matrix from frame i-1 to i.
+    p_rel{i} = A{i}(1 : 3, 4); % Position vector from frame i-1 to i.
+
+    if ~isempty(symvar(Robot(i, 2))) % If the joint is rotational.
+        w{i+1} = R_rel{i}.'* (w_prev + dq(i)*z0);
+        dw{i+1} = R_rel{i}.'* (dw_prev + ddq(i)*z0 + cross(w_prev, dq(i)*z0));
+        ddp{i+1} = R_rel{i}.'* ddp_prev+ ...
+                 cross(dw{i+1}, R_rel{i}.'*p_rel{i})+...
+                 cross(w{i+1}, ...
+                 cross(w{i+1}, R_rel{i}.'*p_rel{i}));
+
+    else % If the joint is prismatic.
+        w{i+1} = R_rel{i}.'* w_prev;
+        dw{i+1} = R_rel{i}.'* dw_prev;
+        ddp{i+1} = R_rel{i}.'*(ddp_prev+ddq(i)*z0) + 2*dq(i)*cross(w{i+1}, R_rel{i}.'*z0)...
+            +cross(dw{i+1}, R_rel{i}.'*p_rel{i}) + cross(w{i+1}, cross(w{i+1}, R_rel{i}.'*p_rel{i}));
+        
     end
-   
-    for i = 1:num_links
-        R   = transforms{i}(1:3,1:3)';
-        r_i = transforms{i}(1:3,4);
 
-
-        omega(:,i+1)   = R*(omega(:,i)   + q_vel(i)*joint_axis);
-
-        alpha(:,i+1)   = R*(alpha(:,i)   + q_acc(i)*joint_axis ...
-                                 + q_vel(i)*cross(omega(:,i), joint_axis));
-
-        lin_acc(:,i+1) = R*lin_acc(:,i) ...
-                       + cross(alpha(:,i+1), R*r_i) ...
-                       + cross(omega(:,i+1), cross(omega(:,i+1), R*r_i));
-    end
-   
-    com_lin_acc = sym(zeros(3, num_links));
-    for i = 1:num_links
-        com_lin_acc(:,i) = lin_acc(:,i+1) ...
-                         + cross(alpha(:,i+1), params.cm{i}) ...
-                         + cross(omega(:,i+1), cross(omega(:,i+1), params.cm{i}));
-    end
+    % Compute the linear acceleration of the center of mass.
+    ddp_C{i+1} = ddp{i+1} + cross(dw{i+1}, CoM{i}) + ...
+               cross(w{i+1}, cross(w{i+1}, CoM{i}));
     
-    force = sym(zeros(3, num_links));
-    force(:,num_links) = params.m{num_links} * com_lin_acc(:,num_links);
+    % Update the previous values for the next iteration.
+    w_prev = w{i+1};
+    dw_prev = dw{i+1};
+    ddp_prev = ddp{i+1};
+    R_prev = R{i+1};
+    p_prev = p{i+1};
+end
 
-    for i = num_links-1:-1:1
-        force(:,i) = transforms{i+1}(1:3,1:3)*force(:,i+1) ...
-                   + params.m{i} * com_lin_acc(:,i);
+for i = n : -1 : 1
+    if i == n
+        f{i} = m(i)*ddp_C{i+1};
+    else
+        f{i} = R_rel{i+1}*f{i+1} + m{i}*ddp_C{i+1};
     end
-    
-    moment = sym(zeros(3, num_links));
+end
 
-    R_end = transforms{num_links}(1:3,1:3);
-    r_end = R_end' * transforms{num_links}(1:3,4);
-    moment(:,num_links) = params.I{num_links}*alpha(:,end) ...
-                        + cross(omega(:,end), params.I{num_links}*omega(:,end)) ...
-                        + cross(r_end + params.cm{num_links}, force(:,num_links));
-
-    for i = num_links-1:-1:1
-        R_next = transforms{i+1}(1:3,1:3);
-        r_i     = transforms{i}(1:3,1:3)' * transforms{i}(1:3,4);
-
-        moment(:,i) = params.I{i}*alpha(:,i+1) ...
-                    + cross(omega(:,i+1), params.I{i}*omega(:,i+1)) ...
-                    + R_next*moment(:,i+1) ...
-                    - cross(params.cm{i}, R_next*force(:,i+1)) ...
-                    + cross(r_i + params.cm{i}, force(:,i));
+for i = n : -1 : 1
+    if i == n
+        mu{i} = I_CoM{i}*dw{i+1} + cross(w{i+1}, I_CoM{i}*w{i+1}) ...
+            + cross((R_rel{i}.'*p_rel{i} + CoM{i}), f{i});
+    else
+        mu{i} = I_CoM{i}*dw{i+1} + ...
+            cross(w{i+1}, I_CoM{i}*w{i+1}) + ...
+            R_rel{i+1}*mu{i+1} - ...
+            cross(CoM{i}, R_rel{i+1}*f{i+1}) + ...
+            cross((R_rel{i}.'*p_rel{i} + CoM{i}), f{i});
     end
+end
 
-    for i = 1:num_links
-        R   = transforms{i}(1:3,1:3);
-        torque(i) = joint_axis.' * R * moment(:,i);
+for i = 1:n
+    if ~isempty(symvar(Robot(i, 2)))
+        tau(i) = z0.'*R_rel{i}*mu{i};
+    else
+        tau(i) = z0.'*R_rel{i}*f{i};
     end
+end
+
 end
