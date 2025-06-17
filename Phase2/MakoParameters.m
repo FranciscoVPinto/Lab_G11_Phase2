@@ -1,18 +1,15 @@
 function pars = MakoParameters()
 
-    % Total mass to distribute
     M_total = 30;
 
     types = repmat({'cylinder'}, 1, 7);
-    dims  = {
-        [0.25, 0.5], ...  
+    dims  = {[0.25, 0.5], ...  
         [0.2, 0.2], ...  
         [0.125, 0.4], ...  
         [0.1, 0.2], ...  
         [0.09, 0.5], ...  
         [0.08, 0.15], ...  
-        [0.0, 0.0]       
-    };
+        [0.0, 0.0]};
 
     n = numel(types);
     V = zeros(1, n);
@@ -40,4 +37,8 @@ function pars = MakoParameters()
 
         pars.I{i} = diag([Ixx, Ixx, Izz]);
     end
+
+    fprintf('Link masses [kg]:\n');
+    fprintf(' %g', mass);
+    fprintf('\n');
 end
