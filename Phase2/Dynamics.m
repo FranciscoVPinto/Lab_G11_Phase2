@@ -4,8 +4,8 @@ params.m       = params.m(1:5);
 params.cm      = params.cm(1:5);
 params.I       = params.I(1:5);
 
-syms dq1 dq2 dq3 dq4 dq5 ddq1 ddq2 ddq3 ddq4 ddq5 real
-g = 9.81;
+syms dq1 dq2 dq3 dq4 dq5 ddq1 ddq2 ddq3 ddq4 ddq5 g real
+
 
 dq   = [dq1;  dq2;  dq3;  dq4;  dq5];
 ddq  = [ddq1; ddq2; ddq3; ddq4; ddq5];
